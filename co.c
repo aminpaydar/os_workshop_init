@@ -13,84 +13,76 @@
 #include <signal.h>
 #endif
 
-typedef struct {
-    task_t tasks[TASK_QUEUE_SIZE];
-    int head, tail;
-    pthread_mutex_t mutex;
-    pthread_cond_t cond;
-} task_queue_t;
+struct Queue {
+     task_t arr[TASK_QUEUE_SIZE];
+     int back;
+     int front;
+};
+struct Queue task_queue;
+pthread_t threads[WORKER_COUNT];
 
-task_queue_t task_queue = {.head = 0, .tail = 0, .mutex = PTHREAD_MUTEX_INITIALIZER, .cond = PTHREAD_COND_INITIALIZER};
-pthread_t workers[WORKER_COUNT];
-atomic_bool running = true;
-atomic_bool workers_init = false;
-
-void task_queue_push(task_func_t func, void *arg) {
-    pthread_mutex_lock(&task_queue.mutex);
-    task_t task = {func, arg};
-    task_queue.tasks[task_queue.tail] = task;
-    task_queue.tail = (task_queue.tail + 1) % TASK_QUEUE_SIZE;
-    pthread_cond_signal(&task_queue.cond);
-    pthread_mutex_unlock(&task_queue.mutex);
-}
-
-task_t task_queue_pop() {
-    pthread_mutex_lock(&task_queue.mutex);
-    while (task_queue.head == task_queue.tail && running) {
-        pthread_cond_wait(&task_queue.cond, &task_queue.mutex);
-    }
-    task_t task = task_queue.tasks[task_queue.head];
-    task_queue.head = (task_queue.head + 1) % TASK_QUEUE_SIZE;
-    pthread_mutex_unlock(&task_queue.mutex);
-    return task;
-}
-
-void *worker_thread(void *arg) {
-    int thread_id = *(int*) arg;
-    char thread_name[32];
-    sprintf(thread_name, "Worker-%d", thread_id);
-    #ifdef __linux__
-    prctl(PR_SET_NAME, thread_name, 0, 0, 0);
-    #endif
-
-    while (running) {
-        task_t task = task_queue_pop();
-        if (task.func) {
-            task.func(task.arg);
+void* worker_thread(void *arg) {
+    // TO BE IMPLEMENTED: Worker thread function that processes tasks from the queue
+    // This function should run in a loop, waiting for tasks to be added to the queue
+    // and executing them as they come in.
+    while (true) {
+        // Wait for a task to be available in the queue
+        if (task_queue.back != task_queue.front) {
+            task_t task;
+            task = task_queue.arr[task_queue.front];
+            task_queue.front = (task_queue.front + 1) % TASK_QUEUE_SIZE; // Move front pointer
+            // Execute the task function with its argument
+            if (task.func) {
+                task.func(task.arg);
+            }
+        } else
+        {
+            continue; // If no task is available, continue waiting
         }
+        
+        
+        // Execute the task
+        // If a shutdown signal is received, break the loop and exit
+        // TO BE IMPLEMENTED: Check for shutdown signal and exit if received
     }
-
-    free(arg);
     return NULL;
 }
 
-void co_init() {
-    if (workers_init) return;
-    int worker_ids[WORKER_COUNT];
-    for (int i = 0; i < WORKER_COUNT; i++) {
-        worker_ids[i] = i + 1;
-    }
-    for (int i = 0; i < WORKER_COUNT; i++) {
-        int *thread_id = malloc(sizeof(int));
-        *thread_id = i + 1;
-        pthread_create(&workers[i], NULL, worker_thread, (void*) thread_id);
-    }
 
-    workers_init = true;
+
+void co_init() {
+
+    task_queue.back = 0;
+    task_queue.front = 0;
+    int idx = 0;
+    for (int i = 0; i < WORKER_COUNT; i++) {
+        pthread_create(&threads[i], NULL, worker_thread, NULL);
+    }
+    // Initialize the queue and worker threads
+    // TO BE IMPLEMENTED thread pool create bcondition_variable_waite andaze worker count thread ye saf be andaze worker count functione thread masalan tread_worker ke toosh ye while ke as sare safe ye task var dare va funcctionesho call cone
+
 }
 
 void co_shutdown() {
-    running = false;
-    pthread_cond_broadcast(&task_queue.cond);
+
+
+
     for (int i = 0; i < WORKER_COUNT; i++) {
-        pthread_join(workers[i], NULL);
+        pthread_cancel(threads[i]); // Cancel each worker thread
     }
+    for (int i = 0; i < WORKER_COUNT; i++) {
+        pthread_join(threads[i], NULL); // Wait for each worker thread to finish
+    }
+    task_queue.back = 0; // Reset the queue
+    task_queue.front = 0; // Reset the queue
+    printf("Worker threads shut down and resources cleaned up.\n");
 }
 
 void co(task_func_t func, void *arg) {
-    task_queue_push(func, arg);
-}
-
+    task_queue.arr[task_queue.back].func = func; // Add the function to the queue
+    task_queue.arr[task_queue.back].arg = arg; // Add the argument to the queue
+    task_queue.back = (task_queue.back + 1) % TASK_QUEUE_SIZE; // Move back pointer
+    }   
 
 int wait_sig() {
     sigset_t mask;

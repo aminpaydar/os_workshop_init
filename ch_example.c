@@ -2,15 +2,15 @@
 #include "ch.h"
 #include <stdlib.h>
 #include <stdio.h>
-#include <unistd.h>
+#include <unistd.h> 
 #include <stdatomic.h>
 
 channel_t *ch;
 
 void producer() {
     for (int i = 0; i < 5; i++) {
-        printf("Producer: Sending %d\n", i);
-        channel_send(ch, (void *)(long)i);
+        printf("Producer: Sending %d\n", i+1);
+        channel_send(ch, (void *)(long)(i+1));
         sleep(1);
     }
 }
