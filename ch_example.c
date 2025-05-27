@@ -7,7 +7,7 @@
 
 channel_t *ch;
 
-void producer() {
+void producer(void *arg) {
     for (int i = 0; i < 5; i++) {
         printf("Producer: Sending %d\n", i);
         channel_send(ch, (void *)(long)i);
@@ -15,12 +15,13 @@ void producer() {
     }
 }
 
-void consumer() {
+void consumer(void *arg) {
     for (int i = 0; i < 5; i++) {
         int data = (int)(long)channel_recv(ch);
         printf("Consumer: Received %d\n", data);
     }
 }
+
 
 int main() {
     co_init();

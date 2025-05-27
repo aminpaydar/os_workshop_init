@@ -42,4 +42,3 @@ int main() {
     co_shutdown();
     return sig;
 }
-
