@@ -6,8 +6,8 @@
 #include <signal.h>
 #ifdef __linux__
 #include <sys/prctl.h>
-#include <bits/types/sigset_t.h>
-#include <bits/sigaction.h>
+//#include <bits/types/sigset_t.h>
+//#include <bits/sigaction.h>
 #else
 // macOS includes
 #include <signal.h>
