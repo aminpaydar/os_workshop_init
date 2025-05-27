@@ -18,79 +18,75 @@ typedef struct {
     int head, tail;
     pthread_mutex_t mutex;
     pthread_cond_t cond;
-} task_queue_t;
+} work_queue_t;
 
-task_queue_t task_queue = {.head = 0, .tail = 0, .mutex = PTHREAD_MUTEX_INITIALIZER, .cond = PTHREAD_COND_INITIALIZER};
-pthread_t workers[WORKER_COUNT];
+work_queue_t work_queue = {.head = 0, .tail = 0, .mutex = PTHREAD_MUTEX_INITIALIZER, .cond = PTHREAD_COND_INITIALIZER};
+pthread_t threads[WORKER_COUNT];
 atomic_bool running = true;
-atomic_bool workers_init = false;
+atomic_bool init_done = false;
 
-void task_queue_push(task_func_t func, void *arg) {
-    pthread_mutex_lock(&task_queue.mutex);
+void queue_add(task_func_t func, void *arg) {
+    pthread_mutex_lock(&work_queue.mutex);
     task_t task = {func, arg};
-    task_queue.tasks[task_queue.tail] = task;
-    task_queue.tail = (task_queue.tail + 1) % TASK_QUEUE_SIZE;
-    pthread_cond_signal(&task_queue.cond);
-    pthread_mutex_unlock(&task_queue.mutex);
+    work_queue.tasks[work_queue.tail] = task;
+    work_queue.tail = (work_queue.tail + 1) % TASK_QUEUE_SIZE;
+    pthread_cond_signal(&work_queue.cond);
+    pthread_mutex_unlock(&work_queue.mutex);
 }
 
-task_t task_queue_pop() {
-    pthread_mutex_lock(&task_queue.mutex);
-    while (task_queue.head == task_queue.tail && running) {
-        pthread_cond_wait(&task_queue.cond, &task_queue.mutex);
+task_t queue_get() {
+    pthread_mutex_lock(&work_queue.mutex);
+    while (work_queue.head == work_queue.tail && running) {
+        pthread_cond_wait(&work_queue.cond, &work_queue.mutex);
     }
-    task_t task = task_queue.tasks[task_queue.head];
-    task_queue.head = (task_queue.head + 1) % TASK_QUEUE_SIZE;
-    pthread_mutex_unlock(&task_queue.mutex);
+    task_t task = work_queue.tasks[work_queue.head];
+    work_queue.head = (work_queue.head + 1) % TASK_QUEUE_SIZE;
+    pthread_mutex_unlock(&work_queue.mutex);
     return task;
 }
 
-void *worker_thread(void *arg) {
-    int thread_id = *(int*) arg;
-    char thread_name[32];
-    sprintf(thread_name, "Worker-%d", thread_id);
-    #ifdef __linux__
-    prctl(PR_SET_NAME, thread_name, 0, 0, 0);
-    #endif
-
+void *worker(void *arg) {
+    int id = *(int*) arg;
+    char name[32];
+    sprintf(name, "Thread-%d", id);
+    prctl(PR_SET_NAME, name, 0, 0, 0);
     while (running) {
-        task_t task = task_queue_pop();
+        task_t task = queue_get();
         if (task.func) {
             task.func(task.arg);
         }
     }
-
     free(arg);
     return NULL;
 }
 
 void co_init() {
-    if (workers_init) return;
-    int worker_ids[WORKER_COUNT];
+    if (init_done) {
+        return;
+    }
+    int ids[WORKER_COUNT];
     for (int i = 0; i < WORKER_COUNT; i++) {
-        worker_ids[i] = i + 1;
+        ids[i] = i;
     }
     for (int i = 0; i < WORKER_COUNT; i++) {
-        int *thread_id = malloc(sizeof(int));
-        *thread_id = i + 1;
-        pthread_create(&workers[i], NULL, worker_thread, (void*) thread_id);
+        int *id = malloc(sizeof(int));
+        *id = i;
+        pthread_create(&threads[i], NULL, worker, (void*) id);
     }
-
-    workers_init = true;
+    init_done = true;
 }
 
 void co_shutdown() {
     running = false;
-    pthread_cond_broadcast(&task_queue.cond);
+    pthread_cond_broadcast(&work_queue.cond);
     for (int i = 0; i < WORKER_COUNT; i++) {
-        pthread_join(workers[i], NULL);
+        pthread_join(threads[i], NULL);
     }
 }
 
 void co(task_func_t func, void *arg) {
-    task_queue_push(func, arg);
+    queue_add(func, arg);
 }
-
 
 int wait_sig() {
     sigset_t mask;
