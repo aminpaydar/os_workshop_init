@@ -24,12 +24,21 @@ void consumer() {
 
 int main() {
     co_init();
+    printf("co initialized\n");
     
     ch = make_ch();
+    printf("Channel created\n");
+
     co(producer, NULL);
     co(consumer, NULL);
     
     int sig = wait_sig();
+
     co_shutdown();
+    printf("co shut down\n");
+
+    del_ch(ch);
+    printf("Channel deleted\n");
+    
     return sig;
 }
