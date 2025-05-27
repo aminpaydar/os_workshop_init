@@ -33,7 +33,7 @@ int main() {
     co_init();
 
     int a = 1;
-    for (int i = 0; i < 10; i ++) {
+    for (int i = 0; i < 100; i ++) {
         co(hello, (void *) &a);    
     }
     
