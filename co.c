@@ -17,22 +17,25 @@ typedef struct {
 
 static Queue *task_queue_global = NULL;
 static pthread_t worker_threads[WORKER_COUNT];
+volatile bool shutting_down = false;
 
 void *worker_thread_func(void *arg) {
     Queue *task_queue = (Queue *)arg;
 
-    pthread_mutex_lock(&task_queue->lock);
     while (true) {
+        pthread_mutex_lock(&task_queue->lock);
+
         // Wait for a task to be available
-        while (task_queue->size == 0) {
+        while (task_queue->size == 0 && !shutting_down) {
             pthread_cond_wait(&task_queue->not_empty, &task_queue->lock);
         }
 
-        pthread_mutex_lock(&task_queue->lock);
-        if (task_queue->size == 0) {
+        // Check if we are shutting down
+        if (shutting_down && task_queue->size == 0) {
             pthread_mutex_unlock(&task_queue->lock);
-            continue;  // No task available, continue waiting
-        }
+            break;  // Exit the thread if shutting down
+        }   
+
         task_t task = task_queue->arr[task_queue->front];
         task_queue->front = (task_queue->front + 1) % TASK_QUEUE_SIZE;
         task_queue->size--;
@@ -61,7 +64,18 @@ void co_init() {
 }
 
 void co_shutdown() {
-    // TO BE IMPLEMENTED
+    pthread_mutex_lock(&task_queue_global->lock);
+    shutting_down = true;  // Signal workers to shut down
+    pthread_cond_broadcast(&task_queue_global->not_empty);  // Wake all threads
+    pthread_mutex_unlock(&task_queue_global->lock);
+
+    for (int i = 0; i < WORKER_COUNT; i++) {
+        pthread_join(worker_threads[i], NULL);  // Wait for them to finish
+    }
+
+    pthread_mutex_destroy(&task_queue_global->lock);
+    pthread_cond_destroy(&task_queue_global->not_empty);
+    free(task_queue_global);
 }
 
 void co(task_func_t func, void *arg) {
