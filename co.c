@@ -13,6 +13,9 @@
 #include <signal.h>
 #endif
 
+
+// Iliya Asadi, Mohammadreza Sheikholeslami and Mehrzad
+
 typedef struct {
     pthread_t* threads;
     task_t* task_queue;

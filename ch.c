@@ -6,6 +6,10 @@
 #include <stdatomic.h>
 
 
+
+// Iliya Asadi, Mohammadreza Sheikholeslami and Mehrzad
+
+
 channel_t* make_ch() {
     channel_t* ch = malloc(sizeof(channel_t));
     if (!ch) return NULL;
