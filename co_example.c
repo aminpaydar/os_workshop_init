@@ -25,6 +25,8 @@ void hello(void *a) {
     int aint = *(int *)a;
     char thread_name[32];
     get_thread_name(thread_name);
+
+    
     printf("[%s] -> Hello from coroutine %d\n", thread_name, aint);
 }
 
