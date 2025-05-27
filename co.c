@@ -1,106 +1,143 @@
 #include "co.h"
-#include <stdlib.h>
-#include <stdio.h>
-#include <unistd.h>
+
+#include <pthread.h>
+#include <signal.h>
 #include <stdatomic.h>
-#include <signal.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
 #ifdef __linux__
-#include <sys/prctl.h>
-#include <bits/types/sigset_t.h>
-#include <bits/sigaction.h>
-#else
-// macOS includes
-#include <signal.h>
+#   include <sys/prctl.h>
 #endif
 
+/*──────────── Shared pool state ────────────*/
 typedef struct {
-    task_t tasks[TASK_QUEUE_SIZE];
-    int head, tail;
-    pthread_mutex_t mutex;
-    pthread_cond_t cond;
-} task_queue_t;
+    task_t buf[TASK_QUEUE_SIZE];
+    size_t head, tail, count;
+    pthread_mutex_t mtx;
+    pthread_cond_t not_empty;
+    pthread_cond_t not_full;
+} queue_t;
 
-task_queue_t task_queue = {.head = 0, .tail = 0, .mutex = PTHREAD_MUTEX_INITIALIZER, .cond = PTHREAD_COND_INITIALIZER};
-pthread_t workers[WORKER_COUNT];
-atomic_bool running = true;
-atomic_bool workers_init = false;
+static queue_t q;
+static pthread_t workers[WORKER_COUNT];
+static atomic_bool shutting_down = ATOMIC_VAR_INIT(false);
 
-void task_queue_push(task_func_t func, void *arg) {
-    pthread_mutex_lock(&task_queue.mutex);
-    task_t task = {func, arg};
-    task_queue.tasks[task_queue.tail] = task;
-    task_queue.tail = (task_queue.tail + 1) % TASK_QUEUE_SIZE;
-    pthread_cond_signal(&task_queue.cond);
-    pthread_mutex_unlock(&task_queue.mutex);
+/*──────────── Queue helpers ────────────*/
+static void enqueue(task_t t) {
+    while (q.count == TASK_QUEUE_SIZE && !shutting_down)
+        pthread_cond_wait(&q.not_full, &q.mtx);
+
+    if (shutting_down)
+        return;
+
+    q.buf[q.tail] = t;
+    q.tail = (q.tail + 1) % TASK_QUEUE_SIZE;
+    q.count++;
+    pthread_cond_signal(&q.not_empty);
 }
 
-task_t task_queue_pop() {
-    pthread_mutex_lock(&task_queue.mutex);
-    while (task_queue.head == task_queue.tail && running) {
-        pthread_cond_wait(&task_queue.cond, &task_queue.mutex);
-    }
-    task_t task = task_queue.tasks[task_queue.head];
-    task_queue.head = (task_queue.head + 1) % TASK_QUEUE_SIZE;
-    pthread_mutex_unlock(&task_queue.mutex);
-    return task;
+static bool dequeue(task_t *out) {
+    while (q.count == 0 && !shutting_down)
+        pthread_cond_wait(&q.not_empty, &q.mtx);
+
+    if (q.count == 0 && shutting_down)
+        return false;
+
+    *out = q.buf[q.head];
+    q.head = (q.head + 1) % TASK_QUEUE_SIZE;
+    q.count--;
+    pthread_cond_signal(&q.not_full);
+    return true;
 }
 
-void *worker_thread(void *arg) {
-    int thread_id = *(int*) arg;
-    char thread_name[32];
-    sprintf(thread_name, "Worker-%d", thread_id);
-    #ifdef __linux__
-    prctl(PR_SET_NAME, thread_name, 0, 0, 0);
-    #endif
+/*──────────── Worker thread main ────────────*/
+static void *worker_main(void *arg) {
+    (void)arg;
 
-    while (running) {
-        task_t task = task_queue_pop();
-        if (task.func) {
-            task.func(task.arg);
-        }
+    static atomic_int id_gen = ATOMIC_VAR_INIT(0);
+    char name[16];
+    snprintf(name, sizeof(name), "co-%02d", atomic_fetch_add(&id_gen, 1));
+    pthread_setname_np(name);
+
+    sigset_t blocked;
+    sigemptyset(&blocked);
+    sigaddset(&blocked, SIGINT);
+    sigaddset(&blocked, SIGTERM);
+    pthread_sigmask(SIG_BLOCK, &blocked, NULL);
+
+    while (true) {
+        task_t t;
+        pthread_mutex_lock(&q.mtx);
+        bool ok = dequeue(&t);
+        pthread_mutex_unlock(&q.mtx);
+
+        if (!ok) break;
+        t.func(t.arg);
     }
-
-    free(arg);
     return NULL;
 }
 
-void co_init() {
-    if (workers_init) return;
-    int worker_ids[WORKER_COUNT];
-    for (int i = 0; i < WORKER_COUNT; i++) {
-        worker_ids[i] = i + 1;
-    }
-    for (int i = 0; i < WORKER_COUNT; i++) {
-        int *thread_id = malloc(sizeof(int));
-        *thread_id = i + 1;
-        pthread_create(&workers[i], NULL, worker_thread, (void*) thread_id);
-    }
+/*──────────── Public API ────────────*/
+void co_init(void) {
+    memset(&q, 0, sizeof(q));
+    pthread_mutex_init(&q.mtx, NULL);
+    pthread_cond_init(&q.not_empty, NULL);
+    pthread_cond_init(&q.not_full, NULL);
 
-    workers_init = true;
-}
-
-void co_shutdown() {
-    running = false;
-    pthread_cond_broadcast(&task_queue.cond);
-    for (int i = 0; i < WORKER_COUNT; i++) {
-        pthread_join(workers[i], NULL);
+    for (int i = 0; i < WORKER_COUNT; ++i) {
+        if (pthread_create(&workers[i], NULL, worker_main, NULL) != 0) {
+            perror("pthread_create");
+            exit(EXIT_FAILURE);
+        }
     }
 }
 
 void co(task_func_t func, void *arg) {
-    task_queue_push(func, arg);
+    if (!func) return;
+
+    pthread_mutex_lock(&q.mtx);
+    if (!shutting_down) {
+        task_t t = { .func = func, .arg = arg };
+        enqueue(t);
+    }
+    pthread_mutex_unlock(&q.mtx);
 }
 
+void co_shutdown(void) {
+    atomic_store(&shutting_down, true);
 
-int wait_sig() {
+    pthread_mutex_lock(&q.mtx);
+    pthread_cond_broadcast(&q.not_empty);
+    pthread_cond_broadcast(&q.not_full);
+    pthread_mutex_unlock(&q.mtx);
+
+    for (int i = 0; i < WORKER_COUNT; ++i)
+        pthread_join(workers[i], NULL);
+
+    pthread_mutex_destroy(&q.mtx);
+    pthread_cond_destroy(&q.not_empty);
+    pthread_cond_destroy(&q.not_full);
+}
+
+int wait_sig(void) {
     sigset_t mask;
     sigemptyset(&mask);
     sigaddset(&mask, SIGINT);
     sigaddset(&mask, SIGTERM);
-    pthread_sigmask(SIG_BLOCK, &mask, NULL);  // Block signals so they are handled by sigwait
-    printf("Waiting for SIGINT (Ctrl+C) or SIGTERM...\n");
+
+    pthread_sigmask(SIG_BLOCK, &mask, NULL);
+
+    puts("Waiting for SIGINT (Ctrl-C) or SIGTERM …");
+
     int signum;
-    sigwait(&mask, &signum);  // Wait for a signal
-    printf("Received signal %d, shutting down...\n", signum);
-    return signum;
+    if (sigwait(&mask, &signum) == 0) {
+        printf("Received signal %d – shutting down …\n", signum);
+        return signum;
+    }
+    perror("sigwait");
+    return -1;
 }
