@@ -32,8 +32,19 @@ int main() {
     co_init();
 
     int a = 1;
-    for (int i = 0; i < 100; i ++) {
-        co(hello, (void *) &a);    
+    for (int i = 0; i < 100; i++) {
+        // A. Allocate memory for this task's argument
+        int *task_arg = malloc(sizeof(int));
+        if (!task_arg) {
+            perror("malloc failed");
+            continue;
+        }
+
+        // B. Assign the unique value (the loop counter)
+        *task_arg = i + 1; // Use i+1 for numbers 1 through 100
+
+        // C. Pass the pointer to this unique memory to the coroutine
+        co(hello, (void *)task_arg);
     }
     
     int sig = wait_sig();
