@@ -13,84 +13,143 @@
 #include <signal.h>
 #endif
 
+
+// Iliya Asadi, Mohammadreza Sheikholeslami and Mehrzad
+
 typedef struct {
-    task_t tasks[TASK_QUEUE_SIZE];
-    int head, tail;
-    pthread_mutex_t mutex;
+    pthread_t* threads;
+    task_t* task_queue;
+    int max_threads;
+    int queue_size;
+    int task_count;
+    int head;
+    int tail;
+    pthread_mutex_t lock;
     pthread_cond_t cond;
-} task_queue_t;
+    _Atomic bool shutdown;
+} ThreadPool;
 
-task_queue_t task_queue = {.head = 0, .tail = 0, .mutex = PTHREAD_MUTEX_INITIALIZER, .cond = PTHREAD_COND_INITIALIZER};
-pthread_t workers[WORKER_COUNT];
-atomic_bool running = true;
-atomic_bool workers_init = false;
+static ThreadPool* pool = NULL;
 
-void task_queue_push(task_func_t func, void *arg) {
-    pthread_mutex_lock(&task_queue.mutex);
-    task_t task = {func, arg};
-    task_queue.tasks[task_queue.tail] = task;
-    task_queue.tail = (task_queue.tail + 1) % TASK_QUEUE_SIZE;
-    pthread_cond_signal(&task_queue.cond);
-    pthread_mutex_unlock(&task_queue.mutex);
-}
-
-task_t task_queue_pop() {
-    pthread_mutex_lock(&task_queue.mutex);
-    while (task_queue.head == task_queue.tail && running) {
-        pthread_cond_wait(&task_queue.cond, &task_queue.mutex);
-    }
-    task_t task = task_queue.tasks[task_queue.head];
-    task_queue.head = (task_queue.head + 1) % TASK_QUEUE_SIZE;
-    pthread_mutex_unlock(&task_queue.mutex);
-    return task;
-}
-
-void *worker_thread(void *arg) {
-    int thread_id = *(int*) arg;
-    char thread_name[32];
-    sprintf(thread_name, "Worker-%d", thread_id);
-    #ifdef __linux__
-    prctl(PR_SET_NAME, thread_name, 0, 0, 0);
-    #endif
-
-    while (running) {
-        task_t task = task_queue_pop();
-        if (task.func) {
-            task.func(task.arg);
+static void* worker_thread(void* arg) {
+    ThreadPool* pool = (ThreadPool*)arg;
+    
+    while (true) {
+        pthread_mutex_lock(&pool->lock);
+        
+        while (pool->task_count == 0 && !atomic_load(&pool->shutdown)) {
+            pthread_cond_wait(&pool->cond, &pool->lock);
         }
+        
+        if (atomic_load(&pool->shutdown) && pool->task_count == 0) {
+            pthread_mutex_unlock(&pool->lock);
+            return NULL;
+        }
+        
+        task_t task = pool->task_queue[pool->head];
+        pool->head = (pool->head + 1) % pool->queue_size;
+        pool->task_count--;
+        
+        pthread_mutex_unlock(&pool->lock);
+        
+        task.func(task.arg);
     }
-
-    free(arg);
+    
     return NULL;
 }
 
 void co_init() {
-    if (workers_init) return;
-    int worker_ids[WORKER_COUNT];
-    for (int i = 0; i < WORKER_COUNT; i++) {
-        worker_ids[i] = i + 1;
+    pool = malloc(sizeof(ThreadPool));
+    if (!pool) {
+        fprintf(stderr, "Failed to allocate thread pool\n");
+        exit(1);
     }
-    for (int i = 0; i < WORKER_COUNT; i++) {
-        int *thread_id = malloc(sizeof(int));
-        *thread_id = i + 1;
-        pthread_create(&workers[i], NULL, worker_thread, (void*) thread_id);
+    
+    pool->max_threads = WORKER_COUNT;
+    pool->queue_size = TASK_QUEUE_SIZE;
+    pool->task_count = 0;
+    pool->head = 0;
+    pool->tail = 0;
+    atomic_store(&pool->shutdown, false);
+    
+    if (pthread_mutex_init(&pool->lock, NULL) != 0) {
+        free(pool);
+        exit(1);
     }
-
-    workers_init = true;
+    if (pthread_cond_init(&pool->cond, NULL) != 0) {
+        pthread_mutex_destroy(&pool->lock);
+        free(pool);
+        exit(1);
+    }
+    
+    pool->threads = malloc(sizeof(pthread_t) * pool->max_threads);
+    pool->task_queue = malloc(sizeof(task_t) * pool->queue_size);
+    
+    if (!pool->threads || !pool->task_queue) {
+        free(pool->threads);
+        free(pool->task_queue);
+        pthread_mutex_destroy(&pool->lock);
+        pthread_cond_destroy(&pool->cond);
+        free(pool);
+        exit(1);
+    }
+    
+    for (int i = 0; i < pool->max_threads; i++) {
+        if (pthread_create(&pool->threads[i], NULL, worker_thread, pool) != 0) {
+            pthread_mutex_destroy(&pool->lock);
+            pthread_cond_destroy(&pool->cond);
+            free(pool->threads);
+            free(pool->task_queue);
+            free(pool);
+            exit(1);
+        }
+    }
 }
 
 void co_shutdown() {
-    running = false;
-    pthread_cond_broadcast(&task_queue.cond);
-    for (int i = 0; i < WORKER_COUNT; i++) {
-        pthread_join(workers[i], NULL);
+    if (!pool) return;
+    
+    
+    atomic_store(&pool->shutdown, true);
+    
+    pthread_mutex_lock(&pool->lock);
+    pthread_cond_broadcast(&pool->cond);
+    pthread_mutex_unlock(&pool->lock);
+    
+    for (int i = 0; i < pool->max_threads; i++) {
+        pthread_join(pool->threads[i], NULL);
     }
+    
+    pthread_mutex_destroy(&pool->lock);
+    pthread_cond_destroy(&pool->cond);
+    free(pool->threads);
+    free(pool->task_queue);
+    free(pool);
+    pool = NULL;
 }
 
 void co(task_func_t func, void *arg) {
-    task_queue_push(func, arg);
+    if (!pool) {
+        fprintf(stderr, "Thread pool not initialized\n");
+        return;
+    }
+    
+    pthread_mutex_lock(&pool->lock);
+    
+    if (pool->task_count == pool->queue_size) {
+        pthread_mutex_unlock(&pool->lock);
+        fprintf(stderr, "Task queue full\n");
+        return;
+    }
+    
+    pool->task_queue[pool->tail].func = func;
+    pool->task_queue[pool->tail].arg = arg;
+    pool->tail = (pool->tail + 1) % pool->queue_size;
+    pool->task_count++;
+    
+    pthread_cond_signal(&pool->cond);
+    pthread_mutex_unlock(&pool->lock);
 }
-
 
 int wait_sig() {
     sigset_t mask;
