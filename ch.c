@@ -20,7 +20,7 @@ channel_t *make_ch() {
 
 void channel_send(channel_t *ch, void *data) {
     pthread_mutex_lock(&ch->mutex);
-    while (ch->size == 0) {
+    while (ch->size == CHANNEL_CAPACITY) {
         pthread_cond_wait(&ch->cond_send, &ch->mutex);
     }
     ch->buffer[ch->tail] = data;
