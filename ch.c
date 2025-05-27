@@ -42,3 +42,13 @@ void *channel_recv(channel_t *ch) {
     pthread_mutex_unlock(&ch->mutex);
     return data;
 }
+
+// This function is not part of the original code but is useful for cleanup.
+void channel_destroy(channel_t *ch) {
+    pthread_mutex_lock(&ch->mutex);
+    pthread_cond_destroy(&ch->cond_send);
+    pthread_cond_destroy(&ch->cond_recv);
+    pthread_mutex_unlock(&ch->mutex);
+    pthread_mutex_destroy(&ch->mutex);
+    free(ch);
+}
