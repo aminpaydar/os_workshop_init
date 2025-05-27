@@ -16,6 +16,7 @@ typedef struct {
 } Queue;
 
 static Queue *task_queue_global = NULL;
+static pthread_t worker_threads[WORKER_COUNT];
 
 void *worker_thread_func(void *arg) {
     Queue *task_queue = (Queue *)arg;
@@ -55,8 +56,7 @@ void co_init() {
     pthread_cond_init(&task_queue_global->not_empty, NULL);
 
     for (int i = 0; i < WORKER_COUNT; i++) {
-        pthread_t worker_thread;
-        pthread_create(&worker_thread, NULL, worker_thread_func, task_queue_global);
+        pthread_create(&worker_threads[i], NULL, worker_thread_func, task_queue_global);
     }
 }
 
