@@ -13,82 +13,57 @@
 #include <signal.h>
 #endif
 
+
+// This code was written by Peyman Bigdeli and MohammadMahdi Rostami
+
+
+void taskQueueAdd(task_func_t func, void *arg);
+void *workerThreadFunction(void *arg);
+task_t taskQueuePeek();
+void co_shutdown();
+void co_init();
+int wait_sig();
+
 typedef struct {
     task_t tasks[TASK_QUEUE_SIZE];
-    int head, tail;
-    pthread_mutex_t mutex;
-    pthread_cond_t cond;
+    int head;
+    int tail;
 } task_queue_t;
 
-task_queue_t task_queue = {.head = 0, .tail = 0, .mutex = PTHREAD_MUTEX_INITIALIZER, .cond = PTHREAD_COND_INITIALIZER};
+pthread_mutex_t lock;
+pthread_cond_t cond;
+
+task_queue_t task_queue = {.head = 0, .tail = 0};
 pthread_t workers[WORKER_COUNT];
-atomic_bool running = true;
+atomic_bool isRunning = true;
 atomic_bool workers_init = false;
 
-void task_queue_push(task_func_t func, void *arg) {
-    pthread_mutex_lock(&task_queue.mutex);
-    task_t task = {func, arg};
-    task_queue.tasks[task_queue.tail] = task;
-    task_queue.tail = (task_queue.tail + 1) % TASK_QUEUE_SIZE;
-    pthread_cond_signal(&task_queue.cond);
-    pthread_mutex_unlock(&task_queue.mutex);
-}
-
-task_t task_queue_pop() {
-    pthread_mutex_lock(&task_queue.mutex);
-    while (task_queue.head == task_queue.tail && running) {
-        pthread_cond_wait(&task_queue.cond, &task_queue.mutex);
-    }
-    task_t task = task_queue.tasks[task_queue.head];
-    task_queue.head = (task_queue.head + 1) % TASK_QUEUE_SIZE;
-    pthread_mutex_unlock(&task_queue.mutex);
-    return task;
-}
-
-void *worker_thread(void *arg) {
-    int thread_id = *(int*) arg;
-    char thread_name[32];
-    sprintf(thread_name, "Worker-%d", thread_id);
-    #ifdef __linux__
-    prctl(PR_SET_NAME, thread_name, 0, 0, 0);
-    #endif
-
-    while (running) {
-        task_t task = task_queue_pop();
-        if (task.func) {
-            task.func(task.arg);
-        }
-    }
-
-    free(arg);
-    return NULL;
-}
 
 void co_init() {
     if (workers_init) return;
-    int worker_ids[WORKER_COUNT];
+    int workerIds[WORKER_COUNT];
     for (int i = 0; i < WORKER_COUNT; i++) {
-        worker_ids[i] = i + 1;
+        workerIds[i] = i + 1;
     }
     for (int i = 0; i < WORKER_COUNT; i++) {
-        int *thread_id = malloc(sizeof(int));
-        *thread_id = i + 1;
-        pthread_create(&workers[i], NULL, worker_thread, (void*) thread_id);
+        int *threadId = malloc(sizeof(int));
+        *threadId = i + 1;
+        pthread_create(&workers[i], NULL, workerThreadFunction, (void*) threadId);
     }
 
     workers_init = true;
 }
 
 void co_shutdown() {
-    running = false;
-    pthread_cond_broadcast(&task_queue.cond);
+    isRunning = false;
+    pthread_cond_broadcast(&cond);
     for (int i = 0; i < WORKER_COUNT; i++) {
         pthread_join(workers[i], NULL);
     }
 }
 
 void co(task_func_t func, void *arg) {
-    task_queue_push(func, arg);
+    taskQueueAdd(func, arg);
 }
 
 
@@ -103,4 +78,46 @@ int wait_sig() {
     sigwait(&mask, &signum);  // Wait for a signal
     printf("Received signal %d, shutting down...\n", signum);
     return signum;
+}
+
+void taskQueueAdd(task_func_t func, void *arg) {
+    pthread_mutex_lock(&lock);
+    task_t task = {func, arg};
+    task_queue.tasks[task_queue.tail] = task;
+    task_queue.tail += 1;
+    task_queue.tail %= TASK_QUEUE_SIZE;
+    pthread_cond_signal(&cond);
+    pthread_mutex_unlock(&lock);
+}
+
+task_t taskQueuePeek() {
+    pthread_mutex_lock(&lock);
+    while (task_queue.head == task_queue.tail && isRunning) {
+        pthread_cond_wait(&cond, &lock);
+    }
+    task_t task = task_queue.tasks[task_queue.head];
+    task_queue.head += 1;
+    task_queue.head %= TASK_QUEUE_SIZE;
+    pthread_mutex_unlock(&lock);
+    return task;
+}
+
+void *workerThreadFunction(void *arg) {
+    // setting the name for thread_name in co_ecample.c
+    int workerId = *(int*) arg;
+    char threadName[32];
+    sprintf(threadName, "Worker id: %d", workerId);
+    #ifdef __linux__
+    prctl(PR_SET_NAME, threadName, 0, 0, 0);
+    #endif
+
+    while (isRunning) {
+        task_t task = taskQueuePeek();
+        if (task.func) {
+            task.func(task.arg);
+        }
+    }
+
+    free(arg);
+    return NULL;
 }
