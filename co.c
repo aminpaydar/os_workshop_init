@@ -6,13 +6,49 @@
 #include <signal.h>
 #ifdef __linux__
 #include <sys/prctl.h>
-#include <bits/types/sigset_t.h>
-#include <bits/sigaction.h>
+//#include <bits/types/sigset_t.h>
+//#include <bits/sigaction.h>
 #else
 // macOS includes
 #include <signal.h>
 #endif
 
+<<<<<<< HEAD
+static pthread_t workers[WORKER_COUNT];
+static task_t task_queue[TASK_QUEUE_SIZE];
+
+static int task_count = 0;
+static int task_head = 0;
+static int task_tail = 0;
+
+static pthread_mutex_t queue_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t queue_cond = PTHREAD_COND_INITIALIZER;
+static bool shutdown_flag = false;
+
+
+void* worker_thread(void* arg) {
+    while (1) {
+        pthread_mutex_lock(&queue_mutex);
+
+        while (task_count == 0 && !shutdown_flag) {
+            pthread_cond_wait(&queue_cond, &queue_mutex);
+        }
+
+        if (shutdown_flag && task_count == 0) {
+            pthread_mutex_unlock(&queue_mutex);
+            break;
+        }
+
+        task_t task = task_queue[task_head];
+        task_head = (task_head + 1) % TASK_QUEUE_SIZE;
+        task_count--;
+
+        pthread_mutex_unlock(&queue_mutex);
+
+        task.func(task.arg);
+    }
+
+=======
 typedef struct {
     task_t tasks[TASK_QUEUE_SIZE];
     int head, tail;
@@ -61,10 +97,26 @@ void *worker_thread(void *arg) {
     }
 
     free(arg);
+>>>>>>> af2f994cb62b1860ab434921740488c751f16a58
     return NULL;
 }
 
 void co_init() {
+<<<<<<< HEAD
+    for (int i = 0; i < WORKER_COUNT; i++) {
+        pthread_create(&workers[i], NULL, worker_thread, NULL);
+    }
+
+
+}
+
+void co_shutdown() {
+    pthread_mutex_lock(&queue_mutex);
+    shutdown_flag = true;
+    pthread_cond_broadcast(&queue_cond);
+    pthread_mutex_unlock(&queue_mutex);
+
+=======
     if (workers_init) return;
     int worker_ids[WORKER_COUNT];
     for (int i = 0; i < WORKER_COUNT; i++) {
@@ -82,13 +134,31 @@ void co_init() {
 void co_shutdown() {
     running = false;
     pthread_cond_broadcast(&task_queue.cond);
+>>>>>>> af2f994cb62b1860ab434921740488c751f16a58
     for (int i = 0; i < WORKER_COUNT; i++) {
         pthread_join(workers[i], NULL);
     }
 }
 
 void co(task_func_t func, void *arg) {
+<<<<<<< HEAD
+    pthread_mutex_lock(&queue_mutex);
+
+    if (task_count < TASK_QUEUE_SIZE) {
+        task_queue[task_tail].func = func;
+        task_queue[task_tail].arg = arg;
+        task_tail = (task_tail + 1) % TASK_QUEUE_SIZE;
+        task_count++;
+
+        pthread_cond_signal(&queue_cond);
+    } else {
+        fprintf(stderr, "Task queue is full!\n");
+    }
+
+    pthread_mutex_unlock(&queue_mutex);
+=======
     task_queue_push(func, arg);
+>>>>>>> af2f994cb62b1860ab434921740488c751f16a58
 }
 
 
@@ -97,10 +167,10 @@ int wait_sig() {
     sigemptyset(&mask);
     sigaddset(&mask, SIGINT);
     sigaddset(&mask, SIGTERM);
-    pthread_sigmask(SIG_BLOCK, &mask, NULL);  // Block signals so they are handled by sigwait
+    pthread_sigmask(SIG_BLOCK, &mask, NULL);  
     printf("Waiting for SIGINT (Ctrl+C) or SIGTERM...\n");
     int signum;
-    sigwait(&mask, &signum);  // Wait for a signal
+    sigwait(&mask, &signum);  
     printf("Received signal %d, shutting down...\n", signum);
     return signum;
 }

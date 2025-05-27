@@ -33,9 +33,11 @@ void hello(void *a) {
 int main() {
     co_init();
 
-    int a = 1;
-    for (int i = 0; i < 100; i ++) {
-        co(hello, (void *) &a);    
+    
+    for (int i = 1; i <= 100; i++) {
+        int *a = malloc(sizeof(int));
+        *a = i;
+        co(hello, (void *) a);  
     }
     
     int sig = wait_sig();

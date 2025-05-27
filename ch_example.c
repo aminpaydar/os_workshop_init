@@ -1,35 +1,109 @@
-#include "co.h"
-#include "ch.h"
-#include <stdlib.h>
-#include <stdio.h>
-#include <unistd.h>
-#include <stdatomic.h>
+#include "ch.h"       
+#include "co.h"       
+#include <stdlib.h>   
+#include <stdio.h>  
+#include <pthread.h>  
 
-channel_t *ch;
 
-void producer() {
-    for (int i = 0; i < 5; i++) {
-        printf("Producer: Sending %d\n", i);
-        channel_send(ch, (void *)(long)i);
-        sleep(1);
+channel_t *make_ch() {
+    channel_t *ch = (channel_t *)malloc(sizeof(channel_t));
+    if (ch == NULL) {
+        perror("Failed to allocate memory for channel");
+        return NULL;
+    }
+
+    ch->head = 0;
+    ch->tail = 0;
+    ch->size = 0;
+
+    if (pthread_mutex_init(&ch->mutex, NULL) != 0) {
+        perror("Failed to initialize channel mutex");
+        free(ch);
+        return NULL;
+    }
+
+    if (pthread_cond_init(&ch->cond_send, NULL) != 0) {
+        perror("Failed to initialize channel send condition variable");
+        pthread_mutex_destroy(&ch->mutex);
+        free(ch);
+        return NULL;
+    }
+
+    if (pthread_cond_init(&ch->cond_recv, NULL) != 0) {
+        perror("Failed to initialize channel receive condition variable");
+        pthread_cond_destroy(&ch->cond_send);  
+        pthread_mutex_destroy(&ch->mutex); 
+        free(ch);
+        return NULL;
+    }
+
+    return ch;
+}
+
+void channel_send(channel_t *ch, void *data) {
+    if (ch == NULL) {
+        fprintf(stderr, "Error: channel_send called on NULL channel.\n");
+        return;
+    }
+
+    if (pthread_mutex_lock(&ch->mutex) != 0) {
+        perror("channel_send: Failed to lock mutex");
+        return;
+    }
+
+    while (ch->size == CHANNEL_CAPACITY) {
+        if (pthread_cond_wait(&ch->cond_send, &ch->mutex) != 0) {
+            perror("channel_send: Failed to wait on cond_send");
+            pthread_mutex_unlock(&ch->mutex); 
+            return;
+        }
+    }
+
+    ch->buffer[ch->tail] = data;
+    ch->tail = (ch->tail + 1) % CHANNEL_CAPACITY;
+    ch->size++;
+
+    if (pthread_cond_signal(&ch->cond_recv) != 0) {
+        perror("channel_send: Failed to signal cond_recv");
+    }
+
+    if (pthread_mutex_unlock(&ch->mutex) != 0) {
+        perror("channel_send: Failed to unlock mutex");
     }
 }
 
-void consumer() {
-    for (int i = 0; i < 5; i++) {
-        int data = (int)(long)channel_recv(ch);
-        printf("Consumer: Received %d\n", data);
+void *channel_recv(channel_t *ch) {
+    if (ch == NULL) {
+        fprintf(stderr, "Error: channel_recv called on NULL channel.\n");
+        return NULL;
     }
-}
 
-int main() {
-    co_init();
-    
-    ch = make_ch();
-    co(producer, NULL);
-    co(consumer, NULL);
-    
-    int sig = wait_sig();
-    co_shutdown();
-    return sig;
+    void *data = NULL;
+
+    if (pthread_mutex_lock(&ch->mutex) != 0) {
+        perror("channel_recv: Failed to lock mutex");
+        return NULL; 
+    }
+
+    while (ch->size == 0) {
+        if (pthread_cond_wait(&ch->cond_recv, &ch->mutex) != 0) {
+            perror("channel_recv: Failed to wait on cond_recv");
+            pthread_mutex_unlock(&ch->mutex); 
+            return NULL;
+        }
+    }
+
+    data = ch->buffer[ch->head];
+    ch->head = (ch->head + 1) % CHANNEL_CAPACITY;
+    ch->size--;
+
+    if (pthread_cond_signal(&ch->cond_send) != 0) {
+        perror("channel_recv: Failed to signal cond_send");
+    }
+
+    if(pthread_mutex_unlock(&ch->mutex) != 0) {
+        perror("channel_recv: Failed to unlock mutex");
+    }
+
+    return data;
 }
