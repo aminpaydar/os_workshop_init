@@ -24,7 +24,6 @@ void *worker_thread_func(void *arg) {
 
     while (true) {
         pthread_mutex_lock(&task_queue->lock);
-
         // Wait for a task to be available
         while (task_queue->size == 0 && !shutting_down) {
             pthread_cond_wait(&task_queue->not_empty, &task_queue->lock);
@@ -92,6 +91,7 @@ void co(task_func_t func, void *arg) {
     } else {
         printf("Task queue is full, cannot add new task.\n");
     }
+    pthread_mutex_unlock(&task_queue_global->lock);
 }
 
 int wait_sig() {
