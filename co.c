@@ -13,6 +13,10 @@
 #include <signal.h>
 #endif
 
+
+// This code was written by Peyman Bigdeli and MohammadMahdi Rostami
+
+
 void taskQueueAdd(task_func_t func, void *arg);
 void *workerThreadFunction(void *arg);
 task_t taskQueuePeek();

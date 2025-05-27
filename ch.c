@@ -5,6 +5,10 @@
 #include <unistd.h>
 #include <stdatomic.h>
 
+
+// This code was written by Peyman Bigdeli and MohammadMahdi Rostami
+
+
 channel_t *make_ch();
 void channel_send(channel_t *ch, void *data);
 void *channel_recv(channel_t *ch);
