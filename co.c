@@ -4,93 +4,90 @@
 #include <unistd.h>
 #include <stdatomic.h>
 #include <signal.h>
+#include <pthread.h>
 #ifdef __linux__
 #include <sys/prctl.h>
 #include <bits/types/sigset_t.h>
 #include <bits/sigaction.h>
 #else
-// macOS includes
 #include <signal.h>
 #endif
 
-typedef struct {
-    task_t tasks[TASK_QUEUE_SIZE];
-    int head, tail;
-    pthread_mutex_t mutex;
-    pthread_cond_t cond;
-} task_queue_t;
+static task_t task_queue[TASK_QUEUE_SIZE];
+static atomic_int queue_head = 0;
+static atomic_int queue_tail = 0;
+static pthread_mutex_t queue_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t queue_not_empty = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t queue_not_full = PTHREAD_COND_INITIALIZER;
 
-task_queue_t task_queue = {.head = 0, .tail = 0, .mutex = PTHREAD_MUTEX_INITIALIZER, .cond = PTHREAD_COND_INITIALIZER};
-pthread_t workers[WORKER_COUNT];
-atomic_bool running = true;
-atomic_bool workers_init = false;
+static pthread_t workers[WORKER_COUNT];
+static atomic_bool running = true;
 
-void task_queue_push(task_func_t func, void *arg) {
-    pthread_mutex_lock(&task_queue.mutex);
-    task_t task = {func, arg};
-    task_queue.tasks[task_queue.tail] = task;
-    task_queue.tail = (task_queue.tail + 1) % TASK_QUEUE_SIZE;
-    pthread_cond_signal(&task_queue.cond);
-    pthread_mutex_unlock(&task_queue.mutex);
-}
-
-task_t task_queue_pop() {
-    pthread_mutex_lock(&task_queue.mutex);
-    while (task_queue.head == task_queue.tail && running) {
-        pthread_cond_wait(&task_queue.cond, &task_queue.mutex);
-    }
-    task_t task = task_queue.tasks[task_queue.head];
-    task_queue.head = (task_queue.head + 1) % TASK_QUEUE_SIZE;
-    pthread_mutex_unlock(&task_queue.mutex);
-    return task;
-}
-
-void *worker_thread(void *arg) {
-    int thread_id = *(int*) arg;
-    char thread_name[32];
-    sprintf(thread_name, "Worker-%d", thread_id);
-    #ifdef __linux__
-    prctl(PR_SET_NAME, thread_name, 0, 0, 0);
-    #endif
-
+static void* worker_thread(void* arg) {
     while (running) {
-        task_t task = task_queue_pop();
-        if (task.func) {
-            task.func(task.arg);
+        task_t* task = NULL;
+        
+        pthread_mutex_lock(&queue_mutex);
+        while (queue_head == queue_tail && running) {
+            pthread_cond_wait(&queue_not_empty, &queue_mutex);
+        }
+        
+        if (queue_head != queue_tail) {
+            task = &task_queue[queue_head % TASK_QUEUE_SIZE];
+            queue_head++;
+            pthread_cond_signal(&queue_not_full);
+        }
+        pthread_mutex_unlock(&queue_mutex);
+        
+        if (task) {
+            task->func(task->arg);
         }
     }
-
-    free(arg);
     return NULL;
 }
 
 void co_init() {
-    if (workers_init) return;
-    int worker_ids[WORKER_COUNT];
+    queue_head = 0;
+    queue_tail = 0;
+    
     for (int i = 0; i < WORKER_COUNT; i++) {
-        worker_ids[i] = i + 1;
+        pthread_create(&workers[i], NULL, worker_thread, NULL);
     }
-    for (int i = 0; i < WORKER_COUNT; i++) {
-        int *thread_id = malloc(sizeof(int));
-        *thread_id = i + 1;
-        pthread_create(&workers[i], NULL, worker_thread, (void*) thread_id);
-    }
-
-    workers_init = true;
 }
 
 void co_shutdown() {
     running = false;
-    pthread_cond_broadcast(&task_queue.cond);
+    
+    pthread_mutex_lock(&queue_mutex);
+    pthread_cond_broadcast(&queue_not_empty);
+    pthread_mutex_unlock(&queue_mutex);
+    
     for (int i = 0; i < WORKER_COUNT; i++) {
         pthread_join(workers[i], NULL);
     }
+    
+    pthread_mutex_destroy(&queue_mutex);
+    pthread_cond_destroy(&queue_not_empty);
+    pthread_cond_destroy(&queue_not_full);
 }
 
 void co(task_func_t func, void *arg) {
-    task_queue_push(func, arg);
+    task_t newtask;
+    newtask.arg = arg;
+    newtask.func = func;
+    
+    pthread_mutex_lock(&queue_mutex);
+    
+    while ((queue_tail - queue_head) >= TASK_QUEUE_SIZE) {
+        pthread_cond_wait(&queue_not_full, &queue_mutex);
+    }
+    
+    task_queue[queue_tail % TASK_QUEUE_SIZE] = newtask;
+    queue_tail++;
+    
+    pthread_cond_signal(&queue_not_empty);
+    pthread_mutex_unlock(&queue_mutex);
 }
-
 
 int wait_sig() {
     sigset_t mask;
