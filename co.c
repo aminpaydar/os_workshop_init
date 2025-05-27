@@ -76,7 +76,6 @@ void co_shutdown() {
     for (int i = 0; i < THREAD_POOL_SIZE; ++i) {
         pthread_join(thread_pool[i], NULL);
     }
-    // Free remaining tasks if any
     while (task_queue.front) {
         TaskNode *tmp = task_queue.front;
         task_queue.front = tmp->next;
