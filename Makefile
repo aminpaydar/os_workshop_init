@@ -1,5 +1,5 @@
 co_example:
-	mkdir -p out && gcc -o out/co_example co_example.c co.c ch.c -lpthread && out/co_example
+	gcc -o co_example co_example.c co.c -pthread && ./co_example 
 
 ch_example:
-	mkdir -p out && gcc -o out/ch_example ch_example.c co.c ch.c -lpthread && out/ch_example
+	gcc -o ch_example ch_example.c co.c ch.c -pthread && ./ch_example 
