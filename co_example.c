@@ -30,6 +30,7 @@ void hello(void *a) {
 
 int main() {
     co_init();
+    printf("co initialized\n");
 
     int a = 1;
     for (int i = 0; i < 100; i ++) {
@@ -37,7 +38,10 @@ int main() {
     }
     
     int sig = wait_sig();
+
     co_shutdown();
+    printf("co shut down\n");
+    
     return sig;
 }
 
