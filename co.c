@@ -12,19 +12,69 @@
 // macOS includes
 #include <signal.h>
 #endif
+#define MAX_TASKS 1024
+#define NUM_THREADS 32
 
-void co_init() {
-    // TO BE IMPLEMENTED
+typedef struct {
+    task_func_t func;
+    void *arg;
+} Task;
+
+static Task task_queue[MAX_TASKS];
+static int task_count = 0;
+static int task_index = 0;
+static pthread_mutex_t queue_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t queue_cond = PTHREAD_COND_INITIALIZER;
+static pthread_t threads[NUM_THREADS];
+static int running = 1;
+
+void *worker(void *arg) {
+    while (1) {
+        pthread_mutex_lock(&queue_mutex);
+
+        while (task_index >= task_count && running) {
+            pthread_cond_wait(&queue_cond, &queue_mutex);
+        }
+
+        if (!running && task_index >= task_count) {
+            pthread_mutex_unlock(&queue_mutex);
+            break;
+        }
+
+        Task task = task_queue[task_index++];
+        pthread_mutex_unlock(&queue_mutex);
+
+        task.func(task.arg);
+    }
+    return NULL;
 }
-
-void co_shutdown() {
-    // TO BE IMPLEMENTED
+void co_init() {
+    for (int i = 0; i < NUM_THREADS; i++) {
+        pthread_create(&threads[i], NULL, worker, NULL);
+    }
 }
 
 void co(task_func_t func, void *arg) {
-    // TO BE IMPLEMENTED
+    pthread_mutex_lock(&queue_mutex);
+    if (task_count < MAX_TASKS) {
+        task_queue[task_count].func = func;
+        task_queue[task_count].arg = arg;
+        task_count++;
+        pthread_cond_signal(&queue_cond);
+    }
+    pthread_mutex_unlock(&queue_mutex);
 }
 
+void co_shutdown() {
+    pthread_mutex_lock(&queue_mutex);
+    running = 0;
+    pthread_cond_broadcast(&queue_cond);
+    pthread_mutex_unlock(&queue_mutex);
+
+    for (int i = 0; i < NUM_THREADS; i++) {
+        pthread_join(threads[i], NULL);
+    }
+}
 int wait_sig() {
     sigset_t mask;
     sigemptyset(&mask);
