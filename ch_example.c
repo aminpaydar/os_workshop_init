@@ -31,5 +31,9 @@ int main() {
     
     int sig = wait_sig();
     co_shutdown();
+
+    // Clean up the channel
+    channel_destroy(ch);
+
     return sig;
 }
