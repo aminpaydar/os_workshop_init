@@ -8,7 +8,11 @@
 channel_t *ch;
 
 void producer() {
+<<<<<<< HEAD
     for (int i = 0; i < 5; i++) {
+=======
+    for (int i = 0; i < 10; i++) {
+>>>>>>> 475d620 (adding code-saleh sabagh)
         printf("Producer: Sending %d\n", i);
         channel_send(ch, (void *)(long)i);
         sleep(1);
