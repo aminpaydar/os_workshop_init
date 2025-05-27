@@ -27,6 +27,7 @@ bool enqueue_task(task_t task)
         task_queue.rear = (task_queue.rear + 1) % TASK_QUEUE_SIZE;
         task_queue.count++;
         pthread_cond_signal(&task_queue.cond);
+        pthread_mutex_unlock(&task_queue.lock);
         return true;
     }
 
