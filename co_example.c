@@ -31,13 +31,16 @@ void hello(void *a) {
 int main() {
     co_init();
 
-    int a = 1;
+    int a = 3;
     for (int i = 0; i < 100; i ++) {
-        co(hello, (void *) &a);    
+    	int* num = malloc(sizeof(int));
+     	*num = i;
+        co(hello, (void *)num);
     }
     
     int sig = wait_sig();
     co_shutdown();
+    printf("shutting down\n");
     return sig;
 }
 
