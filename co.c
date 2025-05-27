@@ -46,7 +46,6 @@ void *worker_thread_func(void *arg) {
 }
 
 void co_init() {
-    // Initializes a task queue with TASK_QUEUE_SIZE capacity
     task_queue_global = malloc(sizeof(Queue));
     task_queue_global->front = 0;
     task_queue_global->rear = 0;
@@ -55,7 +54,6 @@ void co_init() {
     pthread_mutex_init(&task_queue_global->lock, NULL);
     pthread_cond_init(&task_queue_global->not_empty, NULL);
 
-    // Creates a thread pool with WORKER_COUNT threads
     for (int i = 0; i < WORKER_COUNT; i++) {
         pthread_t worker_thread;
         pthread_create(&worker_thread, NULL, worker_thread_func, task_queue_global);
@@ -67,8 +65,19 @@ void co_shutdown() {
 }
 
 void co(task_func_t func, void *arg) {
-    // TO BE IMPLEMENTED
-    // 
+    task_t task;
+    task.func = func;
+    task.arg = arg;
+
+    pthread_mutex_lock(&task_queue_global->lock);
+    if (task_queue_global->size < TASK_QUEUE_SIZE) {
+        task_queue_global->arr[task_queue_global->rear] = task;
+        task_queue_global->rear = (task_queue_global->rear + 1) % TASK_QUEUE_SIZE;
+        task_queue_global->size++;
+        pthread_cond_signal(&task_queue_global->not_empty);  // Notify a worker thread
+    } else {
+        printf("Task queue is full, cannot add new task.\n");
+    }
 }
 
 int wait_sig() {
