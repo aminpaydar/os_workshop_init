@@ -16,5 +16,6 @@ typedef struct {
 channel_t *make_ch();
 void channel_send(channel_t *ch, void *data);
 void *channel_recv(channel_t *ch);
+void destroy_ch(channel_t *ch);
 
 #endif // CH_H
