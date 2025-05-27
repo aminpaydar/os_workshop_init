@@ -1,79 +1,105 @@
-#define _POSIX_C_SOURCE 200809L
-
 #include "co.h"
 #include <stdlib.h>
 #include <stdio.h>
-#include <stdatomic.h>
-#include <pthread.h>
+#include <unistd.h>
 #include <signal.h>
+#include <pthread.h>
 
-#define MAX_COROUTINES 128
+#define SIZE 100
 
 typedef struct {
-    coroutine co;
-    atomic_int active;
-} co_entry;
+    task_func_t func;
+    void* arg;
+} Task;
 
-static co_entry coroutines[MAX_COROUTINES];
-static __thread coroutine *current_co = NULL;
+typedef struct {
+    Task buffer[SIZE];
+    int front;
+    int rear;
+    int count;
+    pthread_mutex_t lock;
+    pthread_cond_t not_empty;
+    pthread_cond_t not_full;
+} TaskQueue;
 
-int co_create(coroutine *co, coroutine_func fn, void *arg) {
-    if (getcontext(&co->ctx) == -1) return -1;
-    co->stack = malloc(STACK_SIZE);
-    if (!co->stack) return -1;
-    co->ctx.uc_stack.ss_sp   = co->stack;
-    co->ctx.uc_stack.ss_size = STACK_SIZE;
-    co->ctx.uc_link          = &co->caller;
-    makecontext(&co->ctx, (void (*)(void))fn, 1, arg);
-    return 0;
+static TaskQueue tasks = {
+        .front = 0, .rear = 0, .count = 0,
+        .lock = PTHREAD_MUTEX_INITIALIZER,
+        .not_empty = PTHREAD_COND_INITIALIZER,
+        .not_full = PTHREAD_COND_INITIALIZER
+};
+
+static pthread_t threads[WORKER_COUNT];
+
+// Queue Functions
+int isEmpty(TaskQueue* q) {
+    return q->count == 0;
 }
 
-void co_resume(coroutine *co) {
-    current_co = co;
-    swapcontext(&co->caller, &co->ctx);
+int isFull(TaskQueue* q) {
+    return q->count == SIZE;
 }
 
-void co_yield(void) {
-    swapcontext(&current_co->ctx, &current_co->caller);
+void enqueue(TaskQueue* q, Task task) {
+    pthread_mutex_lock(&q->lock);
+    while (isFull(q))
+        pthread_cond_wait(&q->not_full, &q->lock);
+    q->buffer[q->rear] = task;
+    q->rear = (q->rear + 1) % SIZE;
+    q->count++;
+    pthread_cond_signal(&q->not_empty);
+    pthread_mutex_unlock(&q->lock);
 }
 
-void co_init(void) {
-    for (int i = 0; i < MAX_COROUTINES; i++) {
-        atomic_store(&coroutines[i].active, 0);
-        coroutines[i].co.stack = NULL;
+Task dequeue(TaskQueue* q) {
+    pthread_mutex_lock(&q->lock);
+    while (isEmpty(q))
+        pthread_cond_wait(&q->not_empty, &q->lock);
+    Task task = q->buffer[q->front];
+    q->front = (q->front + 1) % SIZE;
+    q->count--;
+    pthread_cond_signal(&q->not_full);
+    pthread_mutex_unlock(&q->lock);
+    return task;
+}
+//////////////////////////////////
+
+void* worker(void* arg) {
+    while (1) {
+        Task task = dequeue(&tasks);
+        if (task.func == NULL) break; // Shutdown sig
+        task.func(task.arg);
     }
+    return NULL;
 }
 
-void co_shutdown(void) {
-    for (int i = 0; i < MAX_COROUTINES; i++) {
-        if (atomic_load(&coroutines[i].active)) {
-            free(coroutines[i].co.stack);
-            atomic_store(&coroutines[i].active, 0);
-            coroutines[i].co.stack = NULL;
-        }
+void co_init() {
+    for (int i = 0; i < WORKER_COUNT; i++) {
+        pthread_create(&threads[i], NULL, worker, NULL);
     }
 }
 
 void co(task_func_t func, void *arg) {
-    for (int i = 0; i < MAX_COROUTINES; i++) {
-        if (!atomic_load(&coroutines[i].active)) {
-            coroutine *c = &coroutines[i].co;
-            if (co_create(c, (coroutine_func)func, arg) == 0) {
-                atomic_store(&coroutines[i].active, 1);
-                co_resume(c);
-            }
-            return;
-        }
-    }
-    fprintf(stderr, "No available coroutine slots\n");
+    Task task = { .func = func, .arg = arg };
+    enqueue(&tasks, task);
 }
 
-int wait_sig(void) {
+void co_shutdown() {
+    for (int i = 0; i < WORKER_COUNT; i++) {
+        Task poison = { .func = NULL, .arg = NULL };
+        enqueue(&tasks, poison);
+    }
+    for (int i = 0; i < WORKER_COUNT; i++) {
+        pthread_join(threads[i], NULL);
+    }
+}
+
+int wait_sig() {
     sigset_t mask;
     sigemptyset(&mask);
     sigaddset(&mask, SIGINT);
     sigaddset(&mask, SIGTERM);
-    sigprocmask(SIG_BLOCK, &mask, NULL);
+    pthread_sigmask(SIG_BLOCK, &mask, NULL);
     printf("Waiting for SIGINT (Ctrl+C) or SIGTERM...\n");
     int signum;
     sigwait(&mask, &signum);

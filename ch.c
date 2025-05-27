@@ -27,8 +27,8 @@ void channel_send(channel_t *ch, void *data) {
     ch->tail = (ch->tail + 1) % CHANNEL_CAPACITY;
     ch->size++;
 
-    pthread_cond_signal(&ch->cond_recv);
     pthread_mutex_unlock(&ch->mutex);
+    pthread_cond_signal(&ch->cond_recv);
 }
 
 void *channel_recv(channel_t *ch) {
@@ -42,8 +42,9 @@ void *channel_recv(channel_t *ch) {
     ch->head = (ch->head + 1) % CHANNEL_CAPACITY;
     ch->size--;
 
+
     pthread_cond_signal(&ch->cond_send);
     pthread_mutex_unlock(&ch->mutex);
-
+    
     return data;
 }

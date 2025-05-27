@@ -1,25 +1,23 @@
 #ifndef CO_H
 #define CO_H
 
-#include <ucontext.h>
+#include <pthread.h>
+#include <stdbool.h>
 
-#define STACK_SIZE (64*1024)
+#define WORKER_COUNT 32
+#define TASK_QUEUE_SIZE 100
 
 typedef void (*task_func_t)(void *arg);
-typedef void (*coroutine_func)(void *arg);
 
 typedef struct {
-    ucontext_t ctx;
-    ucontext_t caller;
-    void *stack;
-} coroutine;
+    task_func_t func;
+    void *arg;
+} task_t;
 
-void co_init(void);
-void co_shutdown(void);
+void co_init();
+void co_shutdown();
 void co(task_func_t func, void *arg);
-int co_create(coroutine *co, coroutine_func fn, void *arg);
-void co_resume(coroutine *co);
-void co_yield(void);
-int wait_sig(void);
 
-#endif
+int wait_sig();
+
+#endif // CO_H
