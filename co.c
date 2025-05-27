@@ -4,103 +4,100 @@
 #include <unistd.h>
 #include <stdatomic.h>
 #include <signal.h>
-#ifdef __linux__
+
+#ifdef linux
 #include <sys/prctl.h>
-#include <bits/types/sigset_t.h>
-#include <bits/sigaction.h>
-#else
-// macOS includes
-#include <signal.h>
 #endif
 
 typedef struct {
-    task_t tasks[TASK_QUEUE_SIZE];
-    int head, tail;
-    pthread_mutex_t mutex;
-    pthread_cond_t cond;
+    task_t queue[TASK_QUEUE_SIZE];
+    int front;
+    int rear;
+    pthread_mutex_t lock;
+    pthread_cond_t not_empty;
 } task_queue_t;
 
-task_queue_t task_queue = {.head = 0, .tail = 0, .mutex = PTHREAD_MUTEX_INITIALIZER, .cond = PTHREAD_COND_INITIALIZER};
-pthread_t workers[WORKER_COUNT];
-atomic_bool running = true;
-atomic_bool workers_init = false;
+static task_queue_t task_q = {
+    .front = 0,
+    .rear = 0,
+    .lock = PTHREAD_MUTEX_INITIALIZER,
+    .not_empty = PTHREAD_COND_INITIALIZER
+};
 
-void task_queue_push(task_func_t func, void *arg) {
-    pthread_mutex_lock(&task_queue.mutex);
-    task_t task = {func, arg};
-    task_queue.tasks[task_queue.tail] = task;
-    task_queue.tail = (task_queue.tail + 1) % TASK_QUEUE_SIZE;
-    pthread_cond_signal(&task_queue.cond);
-    pthread_mutex_unlock(&task_queue.mutex);
+static pthread_t worker_threads[WORKER_COUNT];
+static atomic_bool is_active = true;
+static atomic_bool initialized = false;
+
+static void enqueue_task(task_func_t func, void *arg) {
+    pthread_mutex_lock(&task_q.lock);
+    task_q.queue[task_q.rear].func = func;
+    task_q.queue[task_q.rear].arg = arg;
+    task_q.rear = (task_q.rear + 1) % TASK_QUEUE_SIZE;
+    pthread_cond_signal(&task_q.not_empty);
+    pthread_mutex_unlock(&task_q.lock);
 }
 
-task_t task_queue_pop() {
-    pthread_mutex_lock(&task_queue.mutex);
-    while (task_queue.head == task_queue.tail && running) {
-        pthread_cond_wait(&task_queue.cond, &task_queue.mutex);
+static task_t dequeue_task() {
+    pthread_mutex_lock(&task_q.lock);
+    while (task_q.front == task_q.rear && is_active) {
+        pthread_cond_wait(&task_q.not_empty, &task_q.lock);
     }
-    task_t task = task_queue.tasks[task_queue.head];
-    task_queue.head = (task_queue.head + 1) % TASK_QUEUE_SIZE;
-    pthread_mutex_unlock(&task_queue.mutex);
+    task_t task = task_q.queue[task_q.front];
+    task_q.front = (task_q.front + 1) % TASK_QUEUE_SIZE;
+    pthread_mutex_unlock(&task_q.lock);
     return task;
 }
 
-void *worker_thread(void *arg) {
-    int thread_id = *(int*) arg;
-    char thread_name[32];
-    sprintf(thread_name, "Worker-%d", thread_id);
-    #ifdef __linux__
-    prctl(PR_SET_NAME, thread_name, 0, 0, 0);
-    #endif
+static void* worker_loop(void *arg) {
+    int id = *(int*)arg;
+    char name[32];
+    snprintf(name, sizeof(name), "T-%02d", id);
+#ifdef linux
+    prctl(PR_SET_NAME, name, 0, 0, 0);
+#endif
+    free(arg);
 
-    while (running) {
-        task_t task = task_queue_pop();
-        if (task.func) {
+    while (is_active) {
+        task_t task = dequeue_task();
+        if (task.func)
             task.func(task.arg);
-        }
     }
 
-    free(arg);
     return NULL;
 }
 
 void co_init() {
-    if (workers_init) return;
-    int worker_ids[WORKER_COUNT];
-    for (int i = 0; i < WORKER_COUNT; i++) {
-        worker_ids[i] = i + 1;
+    if (initialized) return;
+    for (int i = 0; i < WORKER_COUNT; ++i) {
+        int *id = malloc(sizeof(int));
+        *id = i + 1;
+        pthread_create(&worker_threads[i], NULL, worker_loop, id);
     }
-    for (int i = 0; i < WORKER_COUNT; i++) {
-        int *thread_id = malloc(sizeof(int));
-        *thread_id = i + 1;
-        pthread_create(&workers[i], NULL, worker_thread, (void*) thread_id);
-    }
-
-    workers_init = true;
+    initialized = true;
 }
 
 void co_shutdown() {
-    running = false;
-    pthread_cond_broadcast(&task_queue.cond);
-    for (int i = 0; i < WORKER_COUNT; i++) {
-        pthread_join(workers[i], NULL);
+    is_active = false;
+    pthread_cond_broadcast(&task_q.not_empty);
+    for (int i = 0; i < WORKER_COUNT; ++i) {
+        pthread_join(worker_threads[i], NULL);
     }
 }
 
 void co(task_func_t func, void *arg) {
-    task_queue_push(func, arg);
+    enqueue_task(func, arg);
 }
-
 
 int wait_sig() {
     sigset_t mask;
     sigemptyset(&mask);
     sigaddset(&mask, SIGINT);
     sigaddset(&mask, SIGTERM);
-    pthread_sigmask(SIG_BLOCK, &mask, NULL);  // Block signals so they are handled by sigwait
-    printf("Waiting for SIGINT (Ctrl+C) or SIGTERM...\n");
-    int signum;
-    sigwait(&mask, &signum);  // Wait for a signal
-    printf("Received signal %d, shutting down...\n", signum);
-    return signum;
+    pthread_sigmask(SIG_BLOCK, &mask, NULL);
+
+    printf("Waiting for Ctrl+C or SIGTERM...\n");
+    int sig;
+    sigwait(&mask, &sig);
+    printf("Caught signal %d, terminating...\n", sig);
+    return sig;
 }
