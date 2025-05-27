@@ -49,7 +49,9 @@ void *worker_thread(void *arg) {
     int thread_id = *(int*) arg;
     char thread_name[32];
     sprintf(thread_name, "Worker-%d", thread_id);
+    #ifdef __linux__
     prctl(PR_SET_NAME, thread_name, 0, 0, 0);
+    #endif
 
     while (running) {
         task_t task = task_queue_pop();
