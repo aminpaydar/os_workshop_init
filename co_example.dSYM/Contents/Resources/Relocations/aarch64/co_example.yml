@@ -1,0 +1,5 @@
+---
+triple:          'arm64-apple-darwin'
+binary-path:     '/Users/parsashahkar/Desktop/OS/os_workshop_init/co_example'
+relocations:     []
+...
